@@ -1,0 +1,254 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+import math as mt
+from sklearn.neural_network import MLPRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+# IMPORTANDO OS DADOS OPERACIONAIS GERADOS NO ASPEN PLUS
+
+operational_data = pd.read_excel('esterif_h_data.xlsx')
+operational_df = pd.DataFrame(operational_data, columns=['Pressão de operação (bar)', 'Alimentação de etanol (kg/h)', 'N° de estágios', 'Razão de refluxo', 'Vazão de produto de base (kg/h)', 'Volume de catalisador (L)', 'Produção de etil oleato (kg/h)', 'ETOH PRODUTO', 'REBDUTY (KW)', 'CONDUTY (KW)', 'BOTUTIL (KG/H)', 'DESTUTIL (KG/H)', 'TEMPOP (C°)', 'CO2EMISS (KG/H)', 'BOTPRESS (BAR)', 'tensao_mistura', 'flow_rate_l', 'density_l', 'molecular_weight_l', 'flow_rate_v', 'density_v', 'molecular_weight_v', 'MFOLEIC']) #Dataframe operacional
+
+# IMPORTANDO OS DADOS PARA OS CÁLCULOS ECONÔMICOS
+
+economic_data_utilities = pd.read_excel('db_optimizer.xlsx')
+economic_data_mps = pd.read_excel('db_optimizer2.xlsx')
+economic_data_outros = pd.read_excel('db_optimizer3.xlsx')
+economic_data_depreciacao = pd.read_excel('db_optimizer4.xlsx')
+economic_data_eletricidade = pd.read_excel('db_optimizer5.xlsx')
+
+# CALCULANDO OS INDICADORES ECONÔMICOS COM OS DADOS IMPORTADOS ANTERIORMENTE
+
+vazao_oa = 3829.36
+
+COP = np.zeros(len(operational_df['Pressão de operação (bar)'])) #Construindo o vetor COP para um posterior preenchimento
+CTC = np.zeros(len(operational_df['Pressão de operação (bar)'])) #Construindo o vetor CTC para um posterior preenchimento
+TAC = np.zeros(len(operational_df['Pressão de operação (bar)'])) #Construindo o vetor TAC para um posterior preenchimento
+PBP = np.zeros(len(operational_df['Pressão de operação (bar)'])) #Construindo o vetor PBP para um posterior preenchimento
+CO2 = np. zeros(len(operational_df['Pressão de operação (bar)'])) #Construindo o vetor CO2 para um posterior preenchimento
+
+custo_etericidade_hora = np. zeros(len(operational_df['Pressão de operação (bar)']))
+
+for i in operational_df.index:
+    
+    ## LIQUID PHASE
+    
+    surface_tension = operational_df['tensao_mistura'][i] #Tensão superficial da alimentação na fase líquida
+    flow_rate_l = 2.2*operational_df['flow_rate_l'][i] #Vazão de alimentação na fase líquida
+    density_l = 0.062428*operational_df['density_l'][i] #Densidade da alimentação na fase líquida
+    molecular_weight_l = operational_df['molecular_weight_l'][i] #Peso molecular da alimentação na fase líquida
+    
+    ## VAPOR PHASE
+    
+    flow_rate_v = 2.2*operational_df['flow_rate_v'][i] #Vazão de alimentação na fase vapor
+    density_v = 0.062428*operational_df['density_v'][i] #Densidade da alimentação na fase vapor
+    molecular_weight_v = operational_df['molecular_weight_v'][i] #Peso molecular da alimentação na fase vapor
+    
+    flow_ratio_parameter = (flow_rate_l/flow_rate_v)*((density_v/density_l)**0.5) #Taxa de fluxo de alimentação
+    csb_24in_m_s = 0.09 #Valor adotado da Correlação de Fair para um "Plate spacing" de 24 in
+    surface_tension_factor = (surface_tension/20)**0.2 #Fator de tensão superficial
+    FF = 1 #Fator espumante
+    FHA = 1 #Fator de área de orifício das placas
+    C = csb_24in_m_s*surface_tension_factor*FF*FHA #Parâmetro de capacidade
+    Uf = (C*((density_l-density_v)/density_v)**(1/2))*11.82 #Velocidade de inundação
+    f = 0.8 #Inundação de 80% do sistema
+    Ad_At = 0.1+((flow_ratio_parameter-0.1)/9) #Relação entre a área descendente e a área total da secção circular da coluna
+          
+    diametro_interno = ((4*flow_rate_v)/(f*Uf*3.14*(1-Ad_At)*density_v))**(1/2)
+    
+    dif_pressao = (operational_df['BOTPRESS (BAR)'][i]-1)*14.5038 #psia
+    pressao_projeto = mt.exp(0.60608+0.91615*(mt.log(dif_pressao)) + 0.0015655*(mt.log(dif_pressao))**2)
+    aco_carbono_stress_psi = 15
+    efic_soldagem = 1 #Eficiência de soldagem
+    pv_code = (pressao_projeto*diametro_interno)/(2*aco_carbono_stress_psi*efic_soldagem-1.2*pressao_projeto) #Espessura da parede da coluna
+    pv_code_add = (0.22*(diametro_interno+2.5+18)*(2.14*operational_df['N° de estágios'][i])**2)/(aco_carbono_stress_psi*(diametro_interno+2.5)**2) #Espessura adicional da parede da coluna
+    pv_code_total = pv_code+pv_code_add #Espessura total da parede da coluna
+    pv_code_medio = (pv_code+pv_code_total)/2 #Espessura média da parede da coluna
+    pc_tol_corrosao = 1.125*pv_code_medio #Espessura da parede da coluna com uma tolerância à corrosão
+    weight = 3.14*(diametro_interno+pc_tol_corrosao)*(2.14*operational_df['N° de estágios'][i] +0.8*diametro_interno)*pc_tol_corrosao*0.284 #Peso da coluna, adotando 2,14 ft como a altura entre pratos
+    custo_vertical = mt.exp(7.2756+0.18255*(mt.log(weight))+0.02297*(mt.log(weight))**2) #Custo vertical da coluna
+    custos_plataformas_escadas = 300.9*(diametro_interno**(0.63316))*((2.14*operational_df['N° de estágios'][i])**0.80161)
+    custo_stages = 468*mt.exp(0.1739*diametro_interno*0.083333) #Custo de cada prato da coluna
+    
+    custo_equipamento = custo_vertical+custos_plataformas_escadas+custo_stages*operational_df['N° de estágios'][i]
+    custo_mps = (operational_df['Alimentação de etanol (kg/h)'][i])*(economic_data_mps['Media'][0]) #Custo com matérias-primas
+    custo_utilidades = operational_df['BOTUTIL (KG/H)'][i]+ operational_df['DESTUTIL (KG/H)'][i]
+    custo_etericidade_hora[i] = (((operational_df['REBDUTY (KW)'][i])**2)**0.5 + ((operational_df['CONDUTY (KW)'][i])**2)**0.5)*(economic_data_eletricidade['Custos de eletricidade ($/kWh)'][0])
+    tempo_depreciacao_equipamento_anos = 12
+    tempo_depreciacao_catalisador_anos = 16
+    custo_total_catalisador = (operational_df['Volume de catalisador (L)'][i]*economic_data_mps['Media'][5])*0.75
+    custo_total_catalisador_hora = custo_total_catalisador/(tempo_depreciacao_catalisador_anos*365*24)
+    custo_instalacao = 0.39*custo_equipamento
+    custo_manutencao = 0.32*custo_equipamento
+    custo_logistica = 0.08*custo_equipamento
+    custo_mao_de_obra = 0.08*custo_equipamento
+    waste_treatament_cost = 0.0136*(operational_df['Volume de catalisador (L)'][i])*0.75 #Custo com tratamento de resíduos
+    
+    COP[i] = custo_mps+custo_utilidades+custo_total_catalisador_hora+custo_etericidade_hora[i]+((((custo_manutencao+custo_mao_de_obra)/tempo_depreciacao_equipamento_anos)/365)/24)
+    CTC[i] = custo_equipamento+((custo_mps+custo_etericidade_hora[i]+custo_total_catalisador_hora)*tempo_depreciacao_equipamento_anos*365*24)+custo_instalacao+custo_manutencao+custo_logistica+custo_mao_de_obra #Ao longo da depreciação do equipamento
+    TAC[i] = custo_utilidades*365*24+((custo_equipamento+custo_instalacao+custo_manutencao)/3)+waste_treatament_cost*365*24
+    PBP[i] = (custo_equipamento)/((1-0.15)*(operational_df['Produção de etil oleato (kg/h)'][i])*(economic_data_mps['Media'][7])+0.08*custo_equipamento)
+    CO2[i] = operational_df['CO2EMISS (KG/H)'][i]
+
+operational_df.insert(22, "COP (US$)", COP) #Inserindo o COP no dataframe operacional
+operational_df.insert(23, "CTC (US$)", CTC) #Inserindo o CTC no dataframe operacional
+operational_df.insert(24, "TAC (US$)", TAC) #Inserindo o TAC no dataframe operacional
+operational_df.insert(25, "PBP (anos)", PBP) #Inserindo o PBP no dataframe operacional
+operational_df.insert(26, "Emissão de CO2 (kg/h)", CO2) #Inserindo a emissão de CO2 no dataframe operacional
+
+operational_df = operational_df[np.isfinite(operational_df).all(1)]
+
+# IDENTIFICANDO A INSTENSIDADE DA CORRELAÇÃO ENTRE AS VARIÁVEIS DE PROJETO
+
+matrix_df = operational_df.iloc[:, [0,1,2,3,4,5,6,22,23,24,25,26]]
+
+correlation_matrix = matrix_df.corr()
+
+plt.figure(figsize=(10, 8))
+heatmap = sns.heatmap(correlation_matrix, annot=True, fmt=".2f", cmap='RdBu_r', linewidths=.5, annot_kws={"size": 12, "weight": "bold"}, center=0, vmin=-1, vmax=1)
+heatmap.set_xticklabels(heatmap.get_xticklabels(), size=11, family="serif", weight="bold")
+heatmap.set_yticklabels(heatmap.get_yticklabels(), size=11, family="serif", weight="bold")
+plt.show()
+
+# DIVISÃO DE DADOS DE TREINO E DE TESTE
+
+operational_df_x = operational_df.iloc[:, :6]
+operational_df_Y = operational_df.iloc[:, 6:]
+
+X_train, X_test, y_train, y_test = train_test_split(operational_df_x, operational_df_Y, test_size=0.3, random_state=42)
+
+previsores = X_train.values
+
+scaler = StandardScaler()
+previsores = scaler.fit_transform(previsores)
+test = scaler.transform(X_test)
+
+# IMPLEMENTANDO A RNA - VAZÃO DE ETIL OLEATO
+
+ethyl_flow = y_train.iloc[:, 0].values
+
+regressor = MLPRegressor(hidden_layer_sizes=(8,), max_iter=100000, activation='relu', random_state=42, solver = 'adam', batch_size = 50, verbose=1)
+regressor.fit(previsores, ethyl_flow)
+
+previsao_ethyl_flow = regressor.predict(test)
+
+# IMPLEMENTANDO A RNA - COP
+
+cop_df = y_train.iloc[:, 16].values
+
+regressor = MLPRegressor(hidden_layer_sizes=(10,), max_iter=100000, activation='relu', random_state=42, solver = 'adam', batch_size = 50, verbose=1)
+regressor.fit(previsores, cop_df)
+
+previsao_cop = regressor.predict(test)
+
+# IMPLEMENTANDO A RNA - CTC
+
+ctc_df = y_train.iloc[:, 17].values
+
+regressor = MLPRegressor(hidden_layer_sizes=(10,), max_iter=100000, activation='relu', random_state=42, solver = 'adam', batch_size = 50, verbose=1)
+regressor.fit(previsores, ctc_df)
+
+previsao_ctc = regressor.predict(test)
+
+# IMPLEMENTANDO A RNA - TAC
+
+tac_df = y_train.iloc[:, 18].values
+
+regressor = MLPRegressor(hidden_layer_sizes=(10,), max_iter=100000, activation='relu', random_state=42, solver = 'adam', batch_size = 50, verbose=1)
+regressor.fit(previsores, tac_df)
+
+previsao_tac = regressor.predict(test)
+
+# IMPLEMENTANDO A RNA - PBP
+
+pbp_df = y_train.iloc[:, 19].values
+
+regressor = MLPRegressor(hidden_layer_sizes=(10,), max_iter=100000, activation='relu', random_state=42, solver = 'adam', batch_size = 50, verbose=1)
+regressor.fit(previsores, pbp_df)
+
+previsao_pbp = regressor.predict(test)
+
+# IMPLEMENTANDO A RNA - EMISSÃO DE CO2
+
+co2_df = y_train.iloc[:, 20].values
+
+regressor = MLPRegressor(hidden_layer_sizes=(10,), max_iter=100000, activation='relu', random_state=42, solver = 'adam', batch_size = 50, verbose=1)
+regressor.fit(previsores, co2_df)
+
+previsao_co2 = regressor.predict(test)
+
+# CRIANDO O DATAFRAME DE PREDIÇÃO
+
+predict_df = X_test.iloc[:, :6]
+
+predict_df.insert(6, "ETHYL_predict", previsao_ethyl_flow)
+predict_df.insert(7, "COP_predict", previsao_cop)
+predict_df.insert(8, "CTC_predict", previsao_ctc)
+predict_df.insert(9, "TAC_predict", previsao_tac)
+predict_df.insert(10, "PBP_predict", previsao_pbp)
+predict_df.insert(11, "CO2_predict", previsao_co2)
+
+#ENCONTRANDO OS VALORES MÁXIMOS E MÍNIMOS DA PREDIÇÃO
+
+   ##VAZÃO DE ETIL OLEATO
+   
+min_ethyl = min(previsao_ethyl_flow)
+max_ethyl = max(previsao_ethyl_flow)
+
+   ##COP
+   
+min_cop = min(previsao_cop)
+max_cop = max(previsao_cop)
+
+   ##CTC
+   
+min_ctc = min(previsao_ctc)
+max_ctc = max(previsao_ctc)
+
+   ##TAC
+   
+min_tac = min(previsao_tac)
+max_tac = max(previsao_tac)
+
+   ##PBP
+
+min_pbp = min(previsao_pbp)
+max_pbp = max(previsao_pbp)
+
+    ##EMISSÃO DE CO2
+
+min_co2 = min(previsao_co2)
+max_co2 = max(previsao_co2)
+
+# IMPLEMENTANDO A FUNÇÃO DE DESEJABILIDADE
+
+d_ethyl = np.zeros(len(predict_df['N° de estágios'])) #Construindo o vetor de desejabilidade de produtividade de etil oleato para um posterior preenchimento
+d_cop = np.zeros(len(predict_df['N° de estágios'])) #Construindo o vetor de desejabilidade de COP para um posterior preenchimento
+d_ctc = np.zeros(len(predict_df['N° de estágios'])) #Construindo o vetor de desejabilidade de CTC para um posterior preenchimento
+d_tac = np.zeros(len(predict_df['N° de estágios'])) #Construindo o vetor de desejabilidade de TAC para um posterior preenchimento
+d_pbp = np.zeros(len(predict_df['N° de estágios'])) #Construindo o vetor de desejabilidade de PBP para um posterior preenchimento
+d_co2 = np.zeros(len(predict_df['N° de estágios'])) #Construindo o vetor de desejabilidade de emissão de CO2 para um posterior preenchimento
+desejabilidade = np.zeros(len(predict_df['N° de estágios'])) #Construindo o vetor de desejabilidade total para um posterior preenchimento
+
+predict_df.insert(12, "DESEJABILIDADE ETHYL", d_ethyl) #Inserindo a desejabilidade de produtividade de etil oleato no dataframe de predição
+predict_df.insert(13, "DESEJABILIDADE COP", d_cop) #Inserindo a desejabilidade de COP no dataframe de predição
+predict_df.insert(14, "DESEJABILIDADE CTC", d_ctc) #Inserindo a desejabilidade de CTC no dataframe de predição
+predict_df.insert(15, "DESEJABILIDADE TAC", d_tac) #Inserindo a desejabilidade de TAC no dataframe de predição
+predict_df.insert(16, "DESEJABILIDADE PBP", d_pbp) #Inserindo a desejabilidade de PBP no dataframe de predição
+predict_df.insert(17, "DESEJABILIDADE CO2", d_co2) #Inserindo a desejabilidade de emissão de CO2 no dataframe de predição
+predict_df.insert(18, "DESEJABILIDADE TOTAL", desejabilidade) #Inserindo a desejabilidade total no dataframe de predição
+
+     ## CALCULANDO AS DESEJABILIDADES
+
+for k in predict_df.index:
+    predict_df['DESEJABILIDADE ETHYL'][k] = ((predict_df['ETHYL_predict'][k])-min_ethyl)/(max_ethyl-min_ethyl)
+    predict_df['DESEJABILIDADE COP'][k] = (max_cop-(predict_df['COP_predict'][k]))/(max_cop-min_cop)
+    predict_df['DESEJABILIDADE CTC'][k] = (max_ctc-(predict_df['CTC_predict'][k]))/(max_ctc-min_ctc)
+    predict_df['DESEJABILIDADE TAC'][k] = (max_tac-(predict_df['TAC_predict'][k]))/(max_tac-min_tac)
+    predict_df['DESEJABILIDADE PBP'][k] = (max_pbp-(predict_df['PBP_predict'][k]))/(max_pbp-min_pbp)
+    predict_df['DESEJABILIDADE CO2'][k] = (max_co2-(predict_df['CO2_predict'][k]))/(max_co2-min_co2)
+    
+    predict_df['DESEJABILIDADE TOTAL'][k] = predict_df['DESEJABILIDADE ETHYL'][k]*predict_df['DESEJABILIDADE COP'][k]*predict_df['DESEJABILIDADE CTC'][k]*predict_df['DESEJABILIDADE TAC'][k]*predict_df['DESEJABILIDADE PBP'][k]*predict_df['DESEJABILIDADE CO2'][k]
